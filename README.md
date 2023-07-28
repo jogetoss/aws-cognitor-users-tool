@@ -1,6 +1,10 @@
 # Description
 
-This repository is meant to serve as a general template for how to set up new repositories in the JogetOSS organization. 
+This plugin is designed to synchronize users and groups from an AWS Cognito user pool. AWS Cognito is a fully managed service provided by Amazon Web Services (AWS) that enables you to manage users, groups and other services.
+
+
+To setup and configure this plugin, please see the documentation at 
+
 
 # Getting Help
 
