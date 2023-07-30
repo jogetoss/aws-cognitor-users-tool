@@ -56,14 +56,6 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
 
         Map<String, Integer> cognitoUsers = new HashMap<>();
 
-        Thread cognitoThread = new PluginThread(new Runnable() {
-            @Override
-            public void run() {
-            }
-        });
-        cognitoThread.setDaemon(true);
-        cognitoThread.start();
-
         // prepare aws cognito client
         AWSCognitoIdentityProvider client = createCognitoClient(accessKey, secretKey, region);
         
@@ -180,7 +172,6 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
     }
 
     private static AWSCognitoIdentityProvider createCognitoClient(String accessKey, String secretKey, String region) {
-        region = region.replace("_", "-");
         Regions regions = getRegionFromValue(region);
         AWSCredentials cred = new BasicAWSCredentials(accessKey, secretKey);
         AWSCredentialsProvider credProvider = new AWSStaticCredentialsProvider(cred);
@@ -193,7 +184,8 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
     private static Regions getRegionFromValue(String regionValue) {
         for (Regions region : Regions.values()) {
             String regionName = region.getName().toUpperCase();
-            if (regionName.equalsIgnoreCase(regionValue)) {
+            String finalRegion = regionName.replace('-', '_');
+            if (finalRegion.equalsIgnoreCase(regionValue)) {
                 return region;
             }
         }
