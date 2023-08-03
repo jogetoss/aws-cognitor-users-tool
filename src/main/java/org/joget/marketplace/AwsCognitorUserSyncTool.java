@@ -14,6 +14,8 @@ import com.amazonaws.regions.Regions;
 import com.amazonaws.services.cognitoidp.AWSCognitoIdentityProvider;
 import com.amazonaws.services.cognitoidp.AWSCognitoIdentityProviderClientBuilder;
 import com.amazonaws.services.cognitoidp.model.AttributeType;
+import com.amazonaws.services.cognitoidp.model.DescribeUserPoolRequest;
+import com.amazonaws.services.cognitoidp.model.DescribeUserPoolResult;
 import com.amazonaws.services.cognitoidp.model.GroupType;
 import com.amazonaws.services.cognitoidp.model.ListGroupsRequest;
 import com.amazonaws.services.cognitoidp.model.ListGroupsResult;
@@ -21,12 +23,14 @@ import com.amazonaws.services.cognitoidp.model.ListUsersInGroupRequest;
 import com.amazonaws.services.cognitoidp.model.ListUsersInGroupResult;
 import com.amazonaws.services.cognitoidp.model.ListUsersRequest;
 import com.amazonaws.services.cognitoidp.model.ListUsersResult;
+import com.amazonaws.services.cognitoidp.model.UserPoolType;
 import com.amazonaws.services.cognitoidp.model.UserType;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import org.joget.commons.util.LogUtil;
 import org.joget.directory.dao.EmploymentDao;
 import org.joget.directory.dao.GroupDao;
 import org.joget.directory.dao.RoleDao;
@@ -60,80 +64,94 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
 
         if (client != null) {
 
-            // clear the existing data ( groups, users) for the selected organization
-            clearExistingData(organization);
+            // verify the poolId first
+            boolean validPoolId = true;
+            try {
+                DescribeUserPoolRequest dupr = new DescribeUserPoolRequest();
+                dupr.setUserPoolId(poolId);
+                DescribeUserPoolResult describeUserPoolResult = client.describeUserPool(dupr);
+                UserPoolType userPoolType = describeUserPoolResult.getUserPool();
+            } catch (Exception e) {
+                validPoolId = false;
+                LogUtil.info(getClassName(), "Invalid user pool ID");
+            }
 
-            Organization org = directoryManager.getOrganization(organization);
-            // get the groups
-            ListGroupsRequest lgr = new ListGroupsRequest();
-            lgr.setUserPoolId(poolId);
-            ListGroupsResult listGroups = client.listGroups(lgr);
-            List<GroupType> getGroups = listGroups.getGroups();
+            if (validPoolId) {
+                // clear the existing data ( groups, users) for the selected organization
+                clearExistingData(organization);
 
-            for (GroupType groupType : getGroups) {
-                String groupName = groupType.getGroupName();
-                // create group
-                Group group = new Group();
-                group.setId(groupName);
-                group.setName(groupName);
-                group.setOrganization(org);
-                groupDao.addGroup(group);
+                Organization org = directoryManager.getOrganization(organization);
+                // get the groups
+                ListGroupsRequest lgr = new ListGroupsRequest();
+                lgr.setUserPoolId(poolId);
+                ListGroupsResult listGroups = client.listGroups(lgr);
+                List<GroupType> getGroups = listGroups.getGroups();
 
-                // create the group and set the users
-                ListUsersInGroupRequest luigr = new ListUsersInGroupRequest();
-                luigr.setGroupName(groupName);
-                luigr.setUserPoolId(poolId);
-                ListUsersInGroupResult listUsersInGroup = client.listUsersInGroup(luigr);
-                List<UserType> groupUsers = listUsersInGroup.getUsers();
-                for (UserType userType : groupUsers) {
+                for (GroupType groupType : getGroups) {
+                    String groupName = groupType.getGroupName();
+                    // create group
+                    Group group = new Group();
+                    group.setId(groupName);
+                    group.setName(groupName);
+                    group.setOrganization(org);
+                    groupDao.addGroup(group);
+
+                    // create the group and set the users
+                    ListUsersInGroupRequest luigr = new ListUsersInGroupRequest();
+                    luigr.setGroupName(groupName);
+                    luigr.setUserPoolId(poolId);
+                    ListUsersInGroupResult listUsersInGroup = client.listUsersInGroup(luigr);
+                    List<UserType> groupUsers = listUsersInGroup.getUsers();
+                    for (UserType userType : groupUsers) {
+                        User jogetUser = new User();
+                        String username = userType.getUsername();
+                        boolean enabled = userType.getEnabled();
+                        int status = enabled ? 1 : 0;
+                        jogetUser.setActive(status);
+                        cognitoUsers.put(username, status);
+                        List<AttributeType> atrs = userType.getAttributes();
+                        prepareUser(atrs, jogetUser, group, org);
+                        userDao.addUser(jogetUser);
+
+                        Employment employment = new Employment();
+                        employment.setUserId(jogetUser.getId());
+                        employment.setOrganizationId(organization);
+                        employment.setUser(jogetUser);
+                        employmentDao.addEmployment(employment);
+
+                    }
+                }
+
+                // process users who are not assigned to any group
+                ListUsersRequest lur = new ListUsersRequest();
+                lur.setUserPoolId(poolId);
+                ListUsersResult listUsers = client.listUsers(lur);
+                List<UserType> allUsers = listUsers.getUsers();
+                for (UserType userType : allUsers) {
                     User jogetUser = new User();
                     String username = userType.getUsername();
-                    boolean enabled = userType.getEnabled();
-                    int status = enabled ? 1 : 0;
-                    jogetUser.setActive(status);
-                    cognitoUsers.put(username, status);
-                    List<AttributeType> atrs = userType.getAttributes();
-                    prepareUser(atrs, jogetUser, group, org);
-                    userDao.addUser(jogetUser);
+                    if (!cognitoUsers.containsKey(username)) {
+                        boolean enabled = userType.getEnabled();
+                        int status = enabled ? 1 : 0;
+                        jogetUser.setActive(status);
+                        cognitoUsers.put(username, status);
+                        List<AttributeType> atrs = userType.getAttributes();
+                        prepareUser(atrs, jogetUser, null, org);
+                        userDao.deleteUser(jogetUser.getUsername());
+                        userDao.addUser(jogetUser);
 
-                    Employment employment = new Employment();
-                    employment.setUserId(jogetUser.getId());
-                    employment.setOrganizationId(organization);
-                    employment.setUser(jogetUser);
-                    employmentDao.addEmployment(employment);
-
+                        Employment employment = new Employment();
+                        employment.setUserId(jogetUser.getId());
+                        employment.setOrganizationId(organization);
+                        employment.setUser(jogetUser);
+                        employmentDao.addEmployment(employment);
+                    }
                 }
+                client = null;
             }
-
-            // process users who are not assigned to any group
-            ListUsersRequest lur = new ListUsersRequest();
-            lur.setUserPoolId(poolId);
-            ListUsersResult listUsers = client.listUsers(lur);
-            List<UserType> allUsers = listUsers.getUsers();
-            for (UserType userType : allUsers) {
-                User jogetUser = new User();
-                String username = userType.getUsername();
-                if (!cognitoUsers.containsKey(username)) {
-                    boolean enabled = userType.getEnabled();
-                    int status = enabled ? 1 : 0;
-                    jogetUser.setActive(status);
-                    cognitoUsers.put(username, status);
-                    List<AttributeType> atrs = userType.getAttributes();
-                    prepareUser(atrs, jogetUser, null, org);
-                    userDao.deleteUser(jogetUser.getUsername());
-                    userDao.addUser(jogetUser);
-
-                    Employment employment = new Employment();
-                    employment.setUserId(jogetUser.getId());
-                    employment.setOrganizationId(organization);
-                    employment.setUser(jogetUser);
-                    employmentDao.addEmployment(employment);
-
-                }
-            }
-            client = null;
+        } else {
+            LogUtil.info(getClassName(), "Unable to connec to AWS Cognito. Please check your credentials.");
         }
-
         return null;
     }
 
