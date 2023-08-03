@@ -10,8 +10,6 @@ import com.amazonaws.auth.AWSCredentials;
 import com.amazonaws.auth.AWSCredentialsProvider;
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
-import com.amazonaws.regions.Region;
-import com.amazonaws.regions.RegionUtils;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.cognitoidp.AWSCognitoIdentityProvider;
 import com.amazonaws.services.cognitoidp.AWSCognitoIdentityProviderClientBuilder;
@@ -29,10 +27,11 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import org.joget.commons.util.PluginThread;
+import org.joget.directory.dao.EmploymentDao;
 import org.joget.directory.dao.GroupDao;
 import org.joget.directory.dao.RoleDao;
 import org.joget.directory.dao.UserDao;
+import org.joget.directory.model.Employment;
 import org.joget.directory.model.Group;
 import org.joget.directory.model.Organization;
 import org.joget.directory.model.Role;
@@ -53,13 +52,18 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
         ExtDirectoryManager directoryManager = (ExtDirectoryManager) ac.getBean("directoryManager");
         UserDao userDao = (UserDao) ac.getBean("userDao");
         GroupDao groupDao = (GroupDao) ac.getBean("groupDao");
+        EmploymentDao employmentDao = (EmploymentDao) ac.getBean("employmentDao");
 
         Map<String, Integer> cognitoUsers = new HashMap<>();
 
-        // prepare aws cognito client
         AWSCognitoIdentityProvider client = createCognitoClient(accessKey, secretKey, region);
-        
+
         if (client != null) {
+
+            // clear the existing data ( groups, users) for the selected organization
+            clearExistingData(organization);
+
+            Organization org = directoryManager.getOrganization(organization);
             // get the groups
             ListGroupsRequest lgr = new ListGroupsRequest();
             lgr.setUserPoolId(poolId);
@@ -67,20 +71,7 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
             List<GroupType> getGroups = listGroups.getGroups();
 
             for (GroupType groupType : getGroups) {
-
-                // first delete the users
                 String groupName = groupType.getGroupName();
-                Collection<User> usersByGroupId = directoryManager.getUserByGroupId(groupName);
-                for (User user : usersByGroupId) {
-                    userDao.deleteUser(user.getUsername());
-                }
-
-                // delete the group 
-                groupDao.deleteGroup(groupName);
-
-                // get Org
-                Organization org = directoryManager.getOrganization(organization);
-
                 // create group
                 Group group = new Group();
                 group.setId(groupName);
@@ -102,12 +93,19 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
                     jogetUser.setActive(status);
                     cognitoUsers.put(username, status);
                     List<AttributeType> atrs = userType.getAttributes();
-                    prepareUser(atrs, jogetUser, group);
+                    prepareUser(atrs, jogetUser, group, org);
                     userDao.addUser(jogetUser);
+
+                    Employment employment = new Employment();
+                    employment.setUserId(jogetUser.getId());
+                    employment.setOrganizationId(organization);
+                    employment.setUser(jogetUser);
+                    employmentDao.addEmployment(employment);
+
                 }
             }
 
-            // process users who are not allocated to any group
+            // process users who are not assigned to any group
             ListUsersRequest lur = new ListUsersRequest();
             lur.setUserPoolId(poolId);
             ListUsersResult listUsers = client.listUsers(lur);
@@ -121,9 +119,16 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
                     jogetUser.setActive(status);
                     cognitoUsers.put(username, status);
                     List<AttributeType> atrs = userType.getAttributes();
-                    prepareUser(atrs, jogetUser, null);
+                    prepareUser(atrs, jogetUser, null, org);
                     userDao.deleteUser(jogetUser.getUsername());
                     userDao.addUser(jogetUser);
+
+                    Employment employment = new Employment();
+                    employment.setUserId(jogetUser.getId());
+                    employment.setOrganizationId(organization);
+                    employment.setUser(jogetUser);
+                    employmentDao.addEmployment(employment);
+
                 }
             }
             client = null;
@@ -132,7 +137,27 @@ public class AwsCognitorUserSyncTool extends DefaultApplicationPlugin {
         return null;
     }
 
-    private void prepareUser(List<AttributeType> atrs, User jogetUser, Group group) {
+    public void clearExistingData(String organizationId) {
+        ApplicationContext ac = AppUtil.getApplicationContext();
+        UserDao userDao = (UserDao) ac.getBean("userDao");
+        GroupDao groupDao = (GroupDao) ac.getBean("groupDao");
+        ExtDirectoryManager directoryManager = (ExtDirectoryManager) ac.getBean("directoryManager");
+
+        Collection<User> userList = directoryManager.getUserByOrganizationId(organizationId);
+        Collection<Group> groupList = directoryManager.getGroupsByOrganizationId(null, organizationId, "name", Boolean.FALSE, 0, -1);
+
+        // remove the users
+        for (User user : userList) {
+            userDao.deleteUser(user.getUsername());
+        }
+
+        // remove the groups
+        for (Group group : groupList) {
+            groupDao.deleteGroup(group.getId());
+        }
+    }
+
+    private void prepareUser(List<AttributeType> atrs, User jogetUser, Group group, Organization organization) {
         String firstName = "";
         String lastName = "";
         String email = "";
