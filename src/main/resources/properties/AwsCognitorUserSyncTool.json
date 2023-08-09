@@ -6,6 +6,7 @@
             "name":"organization",
             "label":"@@org.joget.marketplace.awscognitotool.organization@@",
             "type":"selectbox",
+            "required":"True",
             "options_ajax":"[CONTEXT_PATH]/web/json/plugin/org.joget.plugin.enterprise.GroupOptionsBinder/service?action=getOptions"
          },
          {
